@@ -59,6 +59,20 @@
     animation: pulse 1s ease-in-out infinite;
   }
   @keyframes pulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.5); opacity: .5; } }
+  #speak-now {
+    display: none;
+    margin: 6px 0 2px;
+    text-align: center;
+    font-size: clamp(30px, 9vw, 44px);
+    font-weight: 800;
+    color: #ffd54f;
+    text-shadow: 0 0 18px rgba(255, 213, 79, .55);
+  }
+  #speak-now.on { display: block; animation: speakFlash .45s linear infinite; }
+  @keyframes speakFlash {
+    0%, 49% { opacity: 1; transform: scale(1.06); }
+    50%, 100% { opacity: .25; transform: scale(1); }
+  }
   #mic-meter-wrap { display: none; width: min(320px, 80vw); margin: 8px auto 0; }
   #mic-meter { height: 12px; background: #0f3460; border-radius: 6px; overflow: hidden; }
   #mic-meter-fill { height: 100%; width: 0%; background: #4caf50; transition: width .08s linear; }
@@ -143,6 +157,7 @@
 <div id="stats">答对 0 题</div>
 <main>
   <div id="question">准备开始</div>
+  <div id="speak-now">🎤 请说答案！</div>
   <div id="listen-dot"></div>
   <div id="mic-meter-wrap"><div id="mic-meter"><div id="mic-meter-fill"></div></div></div>
   <div id="heard"></div>
@@ -161,7 +176,7 @@
   <button id="start-btn" type="button">开始练习</button>
   <button id="stop-btn" type="button" style="display:none;">结束练习</button>
   <button id="relisten-btn" type="button" style="display:none;">重新收音</button>
-  <div class="tip">说对自动下一题，说错不跳题、不加分。v2 说明：开始时先拿到麦克风权限再收音；如果浏览器自带的在线语音识别连不上（国内网络/国产手机常见），页面会自动切换到「手机语音输入」模式：点答案框、用键盘自带的麦克风说话，输入后自动判题；也可以直接点数字答题。本页不保存录音，也不请求摄像头。</div>
+  <div class="tip">说对自动下一题，说错不跳题、不加分。v3 说明：读题结束后会快速闪烁「🎤 请说答案！」，看到闪烁再开口。如果浏览器自带的在线语音识别连不上、或多次听不到声音（国内网络/国产手机常见），页面会自动切换到「手机语音输入」模式：点答案框、用键盘自带的麦克风说话，输入后自动判题；也可以直接点数字答题。本页不保存录音，也不请求摄像头。</div>
 </div>
 <div id="end-screen">
   <h2>练习结束</h2>
@@ -234,6 +249,7 @@ var restartTimer = null;
 var timerHandle = null;
 var engineMode = 'web'; /* web = 浏览器在线识别; ime = 手机系统语音输入/数字 */
 var micPrimed = false;
+var shortNoSpeechStreak = 0; /* 连续“会话很快结束且没听到声音”的次数 */
 var inputDebounce = null;
 var lastErrorWasNetwork = false;
 
@@ -251,6 +267,7 @@ var voiceToggle = document.getElementById('voice-toggle');
 var micToggle = document.getElementById('mic-toggle');
 var micTestBtn = document.getElementById('mic-test-btn');
 var listenDot = document.getElementById('listen-dot');
+var speakNowEl = document.getElementById('speak-now');
 var bannerEl = document.getElementById('mode-banner');
 var numpadEl = document.getElementById('numpad');
 var endScreen = document.getElementById('end-screen');
@@ -292,6 +309,9 @@ function showBanner(text) {
   }
 }
 
+function showSpeakNow() { speakNowEl.className = 'on'; }
+function hideSpeakNow() { speakNowEl.className = ''; }
+
 function stopListening() {
   if (restartTimer) {
     clearTimeout(restartTimer);
@@ -299,6 +319,7 @@ function stopListening() {
   }
   listenGen += 1;
   listenDot.style.display = 'none';
+  hideSpeakNow();
   var rec = recognition;
   recognition = null;
   if (!rec) return;
@@ -306,6 +327,7 @@ function stopListening() {
   rec.onerror = null;
   rec.onend = null;
   rec.onstart = null;
+  rec.onspeechstart = null;
   try { rec.abort(); } catch (e) {}
 }
 
@@ -378,7 +400,7 @@ function switchToImeMode(reason) {
 
 function scheduleListen() {
   if (restartTimer) clearTimeout(restartTimer);
-  var delay = lastErrorWasNetwork ? 1200 : 500;
+  var delay = lastErrorWasNetwork ? 1200 : 150;
   restartTimer = setTimeout(function () {
     restartTimer = null;
     startListening();
@@ -404,31 +426,44 @@ function startListening() {
     oldRec.onerror = null;
     oldRec.onend = null;
     oldRec.onstart = null;
+    oldRec.onspeechstart = null;
     try { oldRec.abort(); } catch (e1) {}
   }
   var gen = ++listenGen;
+  var sessionStart = Date.now();
   var rec = new Ctor();
   recognition = rec;
   rec.lang = 'zh-CN';
-  try { rec.continuous = false; } catch (e2) {}
-  /* 只取最终结果：中间结果在安卓上容易误判，也更容易触发识别服务异常 */
-  try { rec.interimResults = false; } catch (e3) {}
+  /* v3: 持续收音 + 中间结果。v2 的单次会话在安卓上约 3 秒没声音就以 no-speech 结束，
+     孩子反应稍慢就被判定“没听到”；持续模式下会话保持打开，识别到对的数字立刻判题。 */
+  try { rec.continuous = true; } catch (e2) {}
+  try { rec.interimResults = true; } catch (e3) {}
   try { rec.maxAlternatives = 5; } catch (e4) {}
   rec.onstart = function () {
     if (gen !== listenGen) return;
+    sessionStart = Date.now();
     listenDot.style.display = 'block';
+    showSpeakNow();
     heardEl.textContent = '正在听…请说答案';
+  };
+  rec.onspeechstart = function () {
+    if (gen !== listenGen) return;
+    shortNoSpeechStreak = 0;
+    heardEl.textContent = '听到你说话了，正在识别…';
   };
   rec.onresult = function (event) {
     if (gen !== listenGen || !running || speaking || busy) return;
     networkErrors = 0;
     softErrors = 0;
+    shortNoSpeechStreak = 0;
     lastErrorWasNetwork = false;
     var preview = '';
+    var anyFinal = false;
     var firstNum = null;
     for (var i = event.resultIndex; i < event.results.length; i++) {
       var result = event.results[i];
       if (!result) continue;
+      if (result.isFinal) anyFinal = true;
       if (result[0]) preview += result[0].transcript;
       for (var j = 0; j < result.length; j++) {
         var parsed = parseSpokenNumber(result[j].transcript);
@@ -442,6 +477,7 @@ function startListening() {
       }
     }
     heardEl.textContent = preview ? '听到：' + preview : '正在听…请说答案';
+    if (!anyFinal) return;
     if (firstNum === null) {
       resultEl.textContent = '没听清，请再说一次。';
       resultEl.className = 'wrong';
@@ -472,12 +508,20 @@ function startListening() {
       relistenBtn.style.display = 'inline-block';
     } else if (code === 'no-speech' || code === 'aborted') {
       softErrors += 1;
-      heardEl.textContent = '没听到声音，请再说一次。';
+      var dur = Date.now() - sessionStart;
+      if (dur < 6000) shortNoSpeechStreak += 1; else shortNoSpeechStreak = 0;
+      if (shortNoSpeechStreak >= 3) {
+        /* 连续 3 次会话都很快结束且没听到声音：不是孩子没说话，是这台手机的在线识别拿不到声音，别再空转 */
+        switchToImeMode('在线识别多次听不到声音');
+      } else {
+        heardEl.textContent = '没听到声音，请再说一次。';
+      }
     }
   };
   rec.onend = function () {
     if (gen !== listenGen) return;
     listenDot.style.display = 'none';
+    hideSpeakNow();
     if (recognition === rec) recognition = null;
     if (blockRestart || !running || speaking || busy || !micEnabled || ended) return;
     if (engineMode !== 'web') return;
@@ -509,6 +553,7 @@ function generateQuestion(prefixCorrect) {
   answerInput.value = '';
   resultEl.textContent = '';
   resultEl.className = '';
+  heardEl.textContent = '正在读题…读完后，看到「请说答案」闪烁就开口';
   busy = true;
   speakThen((prefixCorrect ? '正确。' : '') + q.say, function () {
     busy = false;
@@ -588,6 +633,7 @@ function finish(reason) {
 
 function startPractice() {
   if (running) return;
+  stopMicTest(); /* 自检还开着会占住麦克风，识别就只能听到静音 */
   engineMode = 'web';
   showBanner('');
   numpadEl.style.display = 'none';
@@ -601,6 +647,7 @@ function startPractice() {
     ended = false;
     busy = false;
     blockRestart = (engineMode === 'ime');
+    shortNoSpeechStreak = 0;
     networkErrors = 0;
     softErrors = 0;
     correct = 0;
