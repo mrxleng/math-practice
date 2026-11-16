@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>20以内加减法打卡练习</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    font-family: system-ui, -apple-system, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    background: #1a1a2e;
+    color: #eee;
+  }
+  header {
+    padding: 12px 16px;
+    background: #16213e;
+    text-align: center;
+    font-size: 18px;
+    font-weight: 700;
+  }
+  #timer {
+    margin: 8px 0 0;
+    text-align: center;
+    font-size: 40px;
+    font-weight: 800;
+    color: #e94560;
+    font-variant-numeric: tabular-nums;
+  }
+  #stats { margin: 0 0 8px; text-align: center; color: #b7ebc2; }
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+  }
+  #question {
+    margin: 8px 0;
+    min-height: 72px;
+    font-size: clamp(40px, 12vw, 64px);
+    font-weight: 800;
+    text-align: center;
+  }
+  #heard, #result { margin: 4px 0; min-height: 24px; text-align: center; }
+  #heard { color: #bbb; }
+  .correct { color: #4caf50; }
+  .wrong { color: #f44336; }
+  #input-area { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  input {
+    font-size: 28px;
+    width: 140px;
+    text-align: center;
+    padding: 10px;
+    border: 2px solid #0f3460;
+    border-radius: 10px;
+    background: #0f3460;
+    color: #fff;
+  }
+  #controls {
+    padding: 12px 16px calc(16px + env(safe-area-inset-bottom));
+    text-align: center;
+    background: #16213e;
+  }
+  button {
+    font-size: 18px;
+    min-height: 48px;
+    padding: 12px 18px;
+    margin: 4px;
+    border: 0;
+    border-radius: 10px;
+    background: #e94560;
+    color: #fff;
+    font-weight: 700;
+  }
+  #voice-toggle, #mic-toggle, #submit-btn, #restart-btn, #relisten-btn { background: #0f3460; }
+  .tip {
+    max-width: 640px;
+    margin: 8px auto 0;
+    color: #c8c8d8;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  #end-screen {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #1a1a2e;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+  }
+  .big-score { margin: 8px 0; font-size: 64px; color: #4caf50; font-weight: 800; }
+</style>
+</head>
+<body>
+<header>20以内加减法 · 5分钟</header>
+<div id="timer">05:00</div>
+<div id="stats">答对 0 题</div>
+<main>
+  <div id="question">准备开始</div>
+  <div id="heard"></div>
+  <div id="result"></div>
+  <div id="input-area">
+    <input id="answer" inputmode="numeric" autocomplete="off" placeholder="手动输入" disabled>
+    <button id="submit-btn" type="button" disabled>手动提交</button>
+  </div>
+</main>
+<div id="controls">
+  <button id="voice-toggle" type="button">语音播报：开</button>
+  <button id="mic-toggle" type="button">麦克风答题：开</button><br>
+  <button id="start-btn" type="button">开始练习</button>
+  <button id="stop-btn" type="button" style="display:none;">结束练习</button>
+  <button id="relisten-btn" type="button" style="display:none;">重新收音</button>
+  <div class="tip">说对自动下一题，说错不跳题、不加分。在 Chrome 里，语音识别通常会把声音发给浏览器的在线识别服务，需要联网，不是只在这台设备上完成。本页不保存录音，也不请求摄像头。手动输入只是备用。</div>
+</div>
+<div id="end-screen">
+  <h2>练习结束</h2>
+  <div class="big-score" id="big-score">0</div>
+  <p id="final-stats">答对 0 题</p>
+  <p id="final-note">已停止收音和计分。</p>
+  <button id="restart-btn" type="button">再练一次</button>
+</div>
+<script>
+/* PARSE_START */
+function parseSpokenNumber(text) {
+  if (text == null) return null;
+  var s = String(text).replace(/\s+/g, '');
+  s = s.replace(/[０-９]/g, function (ch) {
+    return String.fromCharCode(ch.charCodeAt(0) - 0xFF10 + 48);
+  });
+  s = s.replace(/[，。！？、,.!?;:；：]/g, '');
+  var words = [
+    ['二十', 20], ['十九', 19], ['十八', 18], ['十七', 17], ['十六', 16],
+    ['十五', 15], ['十四', 14], ['十三', 13], ['十二', 12], ['十一', 11],
+    ['十', 10], ['九', 9], ['八', 8], ['七', 7], ['六', 6], ['五', 5],
+    ['四', 4], ['三', 3], ['两', 2], ['二', 2], ['一', 1], ['零', 0], ['〇', 0]
+  ];
+  var values = [];
+  var i = 0;
+  while (i < s.length) {
+    var rest = s.slice(i);
+    var digit = /^\d+/.exec(rest);
+    if (digit) {
+      values.push(parseInt(digit[0], 10));
+      i += digit[0].length;
+      continue;
+    }
+    var found = false;
+    for (var w = 0; w < words.length; w++) {
+      if (rest.indexOf(words[w][0]) === 0) {
+        values.push(words[w][1]);
+        i += words[w][0].length;
+        found = true;
+        break;
+      }
+    }
+    if (!found) i += 1;
+  }
+  if (!values.length) return null;
+  for (var k = 0; k < values.length; k++) {
+    if (values[k] !== values[0] || values[k] < 0 || values[k] > 20) return null;
+  }
+  return values[0];
+}
+/* PARSE_END */
+
+var DURATION_MS = 300000;
+var running = false;
+var ended = false;
+var speaking = false;
+var busy = false;
+var voiceEnabled = true;
+var micEnabled = true;
+var blockRestart = false;
+var networkErrors = 0;
+var correct = 0;
+var currentAnswer = null;
+var deadline = 0;
+var listenGen = 0;
+var speakGen = 0;
+var recognition = null;
+var restartTimer = null;
+var timerHandle = null;
+
+var timerEl = document.getElementById('timer');
+var statsEl = document.getElementById('stats');
+var questionEl = document.getElementById('question');
+var heardEl = document.getElementById('heard');
+var resultEl = document.getElementById('result');
+var answerInput = document.getElementById('answer');
+var startBtn = document.getElementById('start-btn');
+var stopBtn = document.getElementById('stop-btn');
+var submitBtn = document.getElementById('submit-btn');
+var relistenBtn = document.getElementById('relisten-btn');
+var voiceToggle = document.getElementById('voice-toggle');
+var micToggle = document.getElementById('mic-toggle');
+var endScreen = document.getElementById('end-screen');
+var bigScore = document.getElementById('big-score');
+var finalStats = document.getElementById('final-stats');
+var finalNote = document.getElementById('final-note');
+
+function formatLeft(ms) {
+  var sec = Math.max(0, Math.ceil(ms / 1000));
+  var m = Math.floor(sec / 60);
+  var s = sec % 60;
+  return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function updateScore() {
+  statsEl.textContent = '答对 ' + correct + ' 题';
+}
+
+function stopListening() {
+  if (restartTimer) {
+    clearTimeout(restartTimer);
+    restartTimer = null;
+  }
+  listenGen += 1;
+  var rec = recognition;
+  recognition = null;
+  if (!rec) return;
+  rec.onresult = null;
+  rec.onerror = null;
+  rec.onend = null;
+  try { rec.abort(); } catch (e) {}
+}
+
+function stopSpeaking() {
+  speakGen += 1;
+  speaking = false;
+  if (window.speechSynthesis) {
+    try { window.speechSynthesis.cancel(); } catch (e) {}
+  }
+}
+
+function speakThen(text, done) {
+  var gen = ++speakGen;
+  var settled = false;
+  stopListening();
+  function finish() {
+    if (gen !== speakGen || settled) return;
+    settled = true;
+    clearTimeout(watch);
+    speaking = false;
+    done();
+  }
+  if (!voiceEnabled || !window.speechSynthesis || !text) {
+    finish();
+    return;
+  }
+  speaking = true;
+  var utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'zh-CN';
+  utter.rate = 0.95;
+  utter.onend = finish;
+  utter.onerror = finish;
+  var watch = setTimeout(finish, Math.min(8000, 800 + String(text).length * 220));
+  try {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+  } catch (e) {
+    finish();
+  }
+}
+
+function scheduleListen() {
+  if (restartTimer) clearTimeout(restartTimer);
+  restartTimer = setTimeout(function () {
+    restartTimer = null;
+    startListening();
+  }, 300);
+}
+
+function startListening() {
+  if (!running || speaking || busy || !micEnabled || blockRestart || ended) return;
+  var Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Ctor) {
+    heardEl.textContent = '这个浏览器没有语音识别，请用电脑或安卓上的 Chrome。可以先手动输入。';
+    return;
+  }
+  if (restartTimer) {
+    clearTimeout(restartTimer);
+    restartTimer = null;
+  }
+  var oldRec = recognition;
+  recognition = null;
+  if (oldRec) {
+    oldRec.onresult = null;
+    oldRec.onerror = null;
+    oldRec.onend = null;
+    try { oldRec.abort(); } catch (e1) {}
+  }
+  var gen = ++listenGen;
+  var rec = new Ctor();
+  recognition = rec;
+  rec.lang = 'zh-CN';
+  rec.continuous = false;
+  rec.interimResults = false;
+  rec.maxAlternatives = 5;
+  rec.onresult = function (event) {
+    if (gen !== listenGen || !running || speaking || busy) return;
+    var result = event.results[event.results.length - 1];
+    if (!result || !result.isFinal) return;
+    var nums = [];
+    var preview = result[0] ? result[0].transcript : '';
+    for (var j = 0; j < result.length; j++) {
+      var parsed = parseSpokenNumber(result[j].transcript);
+      if (parsed !== null && nums.indexOf(parsed) === -1) nums.push(parsed);
+    }
+    heardEl.textContent = preview ? '听到：' + preview : '';
+    if (nums.length !== 1) {
+      resultEl.textContent = nums.length > 1 ? '有好几个数字，请只说一个答案。' : '没听成 0 到 20 的数字，请再说一次。';
+      resultEl.className = 'wrong';
+      return;
+    }
+    judge(nums[0], true);
+  };
+  rec.onerror = function (event) {
+    if (gen !== listenGen) return;
+    var code = event && event.error;
+    if (code === 'not-allowed' || code === 'service-not-allowed') {
+      blockRestart = true;
+      heardEl.textContent = '麦克风权限被拒绝。请允许麦克风后再点「重新收音」。可以先手动输入。';
+    } else if (code === 'network') {
+      networkErrors += 1;
+      if (networkErrors >= 5) {
+        blockRestart = true;
+        heardEl.textContent = '语音识别服务连不上，已停止自动重试。请检查网络后点「重新收音」。';
+      } else {
+        heardEl.textContent = '语音识别需要联网，当前连不上识别服务。正在重试。';
+      }
+    } else if (code === 'audio-capture') {
+      blockRestart = true;
+      heardEl.textContent = '找不到麦克风。请检查设备后点「重新收音」，或先手动输入。';
+    }
+    relistenBtn.style.display = blockRestart ? 'inline-block' : 'none';
+  };
+  rec.onend = function () {
+    if (gen !== listenGen) return;
+    if (recognition === rec) recognition = null;
+    if (blockRestart || !running || speaking || busy || !micEnabled || ended) return;
+    scheduleListen();
+  };
+  try {
+    rec.start();
+    heardEl.textContent = '正在听…';
+  } catch (e) {
+    heardEl.textContent = '语音识别启动失败，请点「重新收音」或手动输入。';
+  }
+}
+
+function makeQuestion() {
+  if (Math.random() < 0.5) {
+    var a = Math.floor(Math.random() * 21);
+    var b = Math.floor(Math.random() * (21 - a));
+    return { display: a + ' + ' + b + ' = ?', say: a + '加' + b + '等于几', answer: a + b };
+  }
+  var a2 = Math.floor(Math.random() * 21);
+  var b2 = Math.floor(Math.random() * (a2 + 1));
+  return { display: a2 + ' - ' + b2 + ' = ?', say: a2 + '减' + b2 + '等于几', answer: a2 - b2 };
+}
+
+function generateQuestion(prefixCorrect) {
+  var q = makeQuestion();
+  currentAnswer = q.answer;
+  questionEl.textContent = q.display;
+  answerInput.value = '';
+  resultEl.textContent = '';
+  resultEl.className = '';
+  busy = true;
+  speakThen((prefixCorrect ? '正确。' : '') + q.say, function () {
+    busy = false;
+    if (running && !ended) startListening();
+  });
+}
+
+function timeUp() {
+  return deadline > 0 && Date.now() >= deadline;
+}
+
+function judge(num, fromVoice) {
+  if (!running || ended || busy) return;
+  if (fromVoice && speaking) return;
+  if (timeUp()) {
+    finish('time');
+    return;
+  }
+  if (num === null || num !== currentAnswer) {
+    resultEl.textContent = num === null ? '请输入 0 到 20 的整数。' : '不对，再试一次。';
+    resultEl.className = 'wrong';
+    return;
+  }
+  busy = true;
+  correct += 1;
+  updateScore();
+  resultEl.textContent = '正确';
+  resultEl.className = 'correct';
+  stopListening();
+  stopSpeaking();
+  if (timeUp()) {
+    busy = false;
+    finish('time');
+    return;
+  }
+  generateQuestion(true);
+}
+
+function tick() {
+  if (!running || ended) return;
+  var left = deadline - Date.now();
+  if (left <= 0) {
+    timerEl.textContent = '00:00';
+    finish('time');
+    return;
+  }
+  timerEl.textContent = formatLeft(left);
+  timerHandle = setTimeout(tick, Math.min(200, left));
+}
+
+function finish(reason) {
+  if (ended) return;
+  ended = true;
+  running = false;
+  busy = false;
+  stopSpeaking();
+  stopListening();
+  if (timerHandle) clearTimeout(timerHandle);
+  timerEl.textContent = reason === 'time' ? '00:00' : timerEl.textContent;
+  answerInput.disabled = true;
+  submitBtn.disabled = true;
+  submitBtn.style.display = 'none';
+  stopBtn.style.display = 'none';
+  relistenBtn.style.display = 'none';
+  endScreen.style.display = 'flex';
+  bigScore.textContent = String(correct);
+  finalStats.textContent = '答对 ' + correct + ' 题';
+  finalNote.textContent = reason === 'stop' ? '练习已停止，不再收音，也不再计分。' : '5 分钟到了，已停止收音和计分。';
+}
+
+function startPractice() {
+  if (running) return;
+  running = true;
+  ended = false;
+  busy = false;
+  blockRestart = false;
+  networkErrors = 0;
+  correct = 0;
+  currentAnswer = null;
+  updateScore();
+  deadline = Date.now() + DURATION_MS;
+  timerEl.textContent = '05:00';
+  startBtn.style.display = 'none';
+  stopBtn.style.display = 'inline-block';
+  submitBtn.style.display = 'inline-block';
+  answerInput.disabled = false;
+  submitBtn.disabled = false;
+  endScreen.style.display = 'none';
+  relistenBtn.style.display = 'none';
+  if (timerHandle) clearTimeout(timerHandle);
+  tick();
+  generateQuestion(false);
+}
+
+function resetReady() {
+  ended = false;
+  running = false;
+  busy = false;
+  blockRestart = false;
+  networkErrors = 0;
+  correct = 0;
+  currentAnswer = null;
+  deadline = 0;
+  stopSpeaking();
+  stopListening();
+  if (timerHandle) clearTimeout(timerHandle);
+  updateScore();
+  timerEl.textContent = '05:00';
+  questionEl.textContent = '准备开始';
+  heardEl.textContent = '';
+  resultEl.textContent = '';
+  resultEl.className = '';
+  answerInput.value = '';
+  answerInput.disabled = true;
+  submitBtn.disabled = true;
+  submitBtn.style.display = 'none';
+  stopBtn.style.display = 'none';
+  relistenBtn.style.display = 'none';
+  startBtn.style.display = 'inline-block';
+  endScreen.style.display = 'none';
+}
+
+voiceToggle.onclick = function () {
+  voiceEnabled = !voiceEnabled;
+  voiceToggle.textContent = voiceEnabled ? '语音播报：开' : '语音播报：关';
+  if (!voiceEnabled) stopSpeaking();
+};
+
+micToggle.onclick = function () {
+  micEnabled = !micEnabled;
+  micToggle.textContent = micEnabled ? '麦克风答题：开' : '麦克风答题：关';
+  if (!micEnabled) stopListening();
+  else if (running && !speaking && !busy && !ended) startListening();
+};
+
+startBtn.onclick = startPractice;
+stopBtn.onclick = function () { finish('stop'); };
+relistenBtn.onclick = function () {
+  if (!running || ended) return;
+  blockRestart = false;
+  networkErrors = 0;
+  relistenBtn.style.display = 'none';
+  startListening();
+};
+submitBtn.onclick = function () {
+  var raw = answerInput.value.trim();
+  if (!/^(?:0|[1-9]\d*)$/.test(raw)) {
+    judge(null, false);
+    return;
+  }
+  var n = Number(raw);
+  judge(n > 20 ? null : n, false);
+};
+answerInput.onkeydown = function (e) {
+  if (e.key === 'Enter') submitBtn.onclick();
+};
+document.getElementById('restart-btn').onclick = resetReady;
+</script>
+</body>
+</html>
