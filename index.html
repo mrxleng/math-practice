@@ -50,16 +50,54 @@
   #heard { color: #bbb; }
   .correct { color: #4caf50; }
   .wrong { color: #f44336; }
+  #listen-dot {
+    display: none;
+    width: 14px; height: 14px;
+    margin: 6px auto 0;
+    border-radius: 50%;
+    background: #4caf50;
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.5); opacity: .5; } }
+  #mic-meter-wrap { display: none; width: min(320px, 80vw); margin: 8px auto 0; }
+  #mic-meter { height: 12px; background: #0f3460; border-radius: 6px; overflow: hidden; }
+  #mic-meter-fill { height: 100%; width: 0%; background: #4caf50; transition: width .08s linear; }
+  #mode-banner {
+    display: none;
+    max-width: 640px;
+    margin: 8px auto 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #53350a;
+    color: #ffd58a;
+    font-size: 15px;
+    line-height: 1.5;
+    text-align: center;
+  }
   #input-area { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
   input {
     font-size: 28px;
-    width: 140px;
+    width: 160px;
     text-align: center;
     padding: 10px;
     border: 2px solid #0f3460;
     border-radius: 10px;
     background: #0f3460;
     color: #fff;
+  }
+  #numpad {
+    display: none;
+    max-width: 420px;
+    margin: 12px auto 0;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 6px;
+  }
+  #numpad button {
+    font-size: 20px;
+    min-height: 44px;
+    padding: 6px 0;
+    margin: 0;
+    background: #0f3460;
   }
   #controls {
     padding: 12px 16px calc(16px + env(safe-area-inset-bottom));
@@ -77,7 +115,7 @@
     color: #fff;
     font-weight: 700;
   }
-  #voice-toggle, #mic-toggle, #submit-btn, #restart-btn, #relisten-btn { background: #0f3460; }
+  #voice-toggle, #mic-toggle, #submit-btn, #restart-btn, #relisten-btn, #mic-test-btn { background: #0f3460; }
   .tip {
     max-width: 640px;
     margin: 8px auto 0;
@@ -105,20 +143,25 @@
 <div id="stats">答对 0 题</div>
 <main>
   <div id="question">准备开始</div>
+  <div id="listen-dot"></div>
+  <div id="mic-meter-wrap"><div id="mic-meter"><div id="mic-meter-fill"></div></div></div>
   <div id="heard"></div>
   <div id="result"></div>
+  <div id="mode-banner"></div>
   <div id="input-area">
-    <input id="answer" inputmode="numeric" autocomplete="off" placeholder="手动输入" disabled>
-    <button id="submit-btn" type="button" disabled>手动提交</button>
+    <input id="answer" inputmode="numeric" autocomplete="off" placeholder="输入答案" disabled>
+    <button id="submit-btn" type="button" disabled>提交</button>
   </div>
+  <div id="numpad"></div>
 </main>
 <div id="controls">
   <button id="voice-toggle" type="button">语音播报：开</button>
-  <button id="mic-toggle" type="button">麦克风答题：开</button><br>
+  <button id="mic-toggle" type="button">麦克风答题：开</button>
+  <button id="mic-test-btn" type="button">测试麦克风</button><br>
   <button id="start-btn" type="button">开始练习</button>
   <button id="stop-btn" type="button" style="display:none;">结束练习</button>
   <button id="relisten-btn" type="button" style="display:none;">重新收音</button>
-  <div class="tip">说对自动下一题，说错不跳题、不加分。在 Chrome 里，语音识别通常会把声音发给浏览器的在线识别服务，需要联网，不是只在这台设备上完成。本页不保存录音，也不请求摄像头。手动输入只是备用。</div>
+  <div class="tip">说对自动下一题，说错不跳题、不加分。v2 说明：开始时先拿到麦克风权限再收音；如果浏览器自带的在线语音识别连不上（国内网络/国产手机常见），页面会自动切换到「手机语音输入」模式：点答案框、用键盘自带的麦克风说话，输入后自动判题；也可以直接点数字答题。本页不保存录音，也不请求摄像头。</div>
 </div>
 <div id="end-screen">
   <h2>练习结束</h2>
@@ -180,6 +223,7 @@ var voiceEnabled = true;
 var micEnabled = true;
 var blockRestart = false;
 var networkErrors = 0;
+var softErrors = 0;
 var correct = 0;
 var currentAnswer = null;
 var deadline = 0;
@@ -188,6 +232,10 @@ var speakGen = 0;
 var recognition = null;
 var restartTimer = null;
 var timerHandle = null;
+var engineMode = 'web'; /* web = 浏览器在线识别; ime = 手机系统语音输入/数字 */
+var micPrimed = false;
+var inputDebounce = null;
+var lastErrorWasNetwork = false;
 
 var timerEl = document.getElementById('timer');
 var statsEl = document.getElementById('stats');
@@ -201,10 +249,27 @@ var submitBtn = document.getElementById('submit-btn');
 var relistenBtn = document.getElementById('relisten-btn');
 var voiceToggle = document.getElementById('voice-toggle');
 var micToggle = document.getElementById('mic-toggle');
+var micTestBtn = document.getElementById('mic-test-btn');
+var listenDot = document.getElementById('listen-dot');
+var bannerEl = document.getElementById('mode-banner');
+var numpadEl = document.getElementById('numpad');
 var endScreen = document.getElementById('end-screen');
 var bigScore = document.getElementById('big-score');
 var finalStats = document.getElementById('final-stats');
 var finalNote = document.getElementById('final-note');
+
+/* 数字答题盘（兜底模式用） */
+(function buildNumpad() {
+  for (var n = 0; n <= 20; n++) {
+    (function (v) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = String(v);
+      b.onclick = function () { judge(v, false); };
+      numpadEl.appendChild(b);
+    })(n);
+  }
+})();
 
 function formatLeft(ms) {
   var sec = Math.max(0, Math.ceil(ms / 1000));
@@ -217,18 +282,30 @@ function updateScore() {
   statsEl.textContent = '答对 ' + correct + ' 题';
 }
 
+function showBanner(text) {
+  if (text) {
+    bannerEl.textContent = text;
+    bannerEl.style.display = 'block';
+  } else {
+    bannerEl.textContent = '';
+    bannerEl.style.display = 'none';
+  }
+}
+
 function stopListening() {
   if (restartTimer) {
     clearTimeout(restartTimer);
     restartTimer = null;
   }
   listenGen += 1;
+  listenDot.style.display = 'none';
   var rec = recognition;
   recognition = null;
   if (!rec) return;
   rec.onresult = null;
   rec.onerror = null;
   rec.onend = null;
+  rec.onstart = null;
   try { rec.abort(); } catch (e) {}
 }
 
@@ -249,7 +326,8 @@ function speakThen(text, done) {
     settled = true;
     clearTimeout(watch);
     speaking = false;
-    done();
+    /* 安卓 Chrome 的 onend 可能早于声音真正播完，留一点间隔再开麦，避免把播报声当答案收进去 */
+    setTimeout(done, 350);
   }
   if (!voiceEnabled || !window.speechSynthesis || !text) {
     finish();
@@ -270,19 +348,49 @@ function speakThen(text, done) {
   }
 }
 
+/* 先用 getUserMedia 把麦克风权限拿到手，再启动识别。
+   v1 直接启动识别，权限弹窗/授权竞态在安卓 Chrome 上会让识别以 network/无结果失败。 */
+function primeMic(done) {
+  if (micPrimed || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    done(true);
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+    stream.getTracks().forEach(function (t) { t.stop(); });
+    micPrimed = true;
+    done(true);
+  }).catch(function () {
+    done(false);
+  });
+}
+
+function switchToImeMode(reason) {
+  if (engineMode === 'ime') return;
+  engineMode = 'ime';
+  blockRestart = true;
+  stopListening();
+  showBanner('浏览器自带的在线语音识别连不上（' + reason + '），已切换到手机语音输入模式：点下面的答案框 → 点键盘上的麦克风按钮 → 说出答案，输入后会自动判题、答对自动下一题。也可以直接点数字答题。');
+  numpadEl.style.display = 'grid';
+  relistenBtn.style.display = 'none';
+  heardEl.textContent = '当前：手机语音输入模式';
+  try { answerInput.focus(); } catch (e) {}
+}
+
 function scheduleListen() {
   if (restartTimer) clearTimeout(restartTimer);
+  var delay = lastErrorWasNetwork ? 1200 : 500;
   restartTimer = setTimeout(function () {
     restartTimer = null;
     startListening();
-  }, 300);
+  }, delay);
 }
 
 function startListening() {
   if (!running || speaking || busy || !micEnabled || blockRestart || ended) return;
+  if (engineMode !== 'web') return;
   var Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Ctor) {
-    heardEl.textContent = '这个浏览器没有语音识别，请用电脑或安卓上的 Chrome。可以先手动输入。';
+    switchToImeMode('这个浏览器没有在线语音识别');
     return;
   }
   if (restartTimer) {
@@ -295,24 +403,32 @@ function startListening() {
     oldRec.onresult = null;
     oldRec.onerror = null;
     oldRec.onend = null;
+    oldRec.onstart = null;
     try { oldRec.abort(); } catch (e1) {}
   }
   var gen = ++listenGen;
   var rec = new Ctor();
   recognition = rec;
   rec.lang = 'zh-CN';
-  rec.continuous = false;
-  rec.interimResults = true;
-  rec.maxAlternatives = 5;
+  try { rec.continuous = false; } catch (e2) {}
+  /* 只取最终结果：中间结果在安卓上容易误判，也更容易触发识别服务异常 */
+  try { rec.interimResults = false; } catch (e3) {}
+  try { rec.maxAlternatives = 5; } catch (e4) {}
+  rec.onstart = function () {
+    if (gen !== listenGen) return;
+    listenDot.style.display = 'block';
+    heardEl.textContent = '正在听…请说答案';
+  };
   rec.onresult = function (event) {
     if (gen !== listenGen || !running || speaking || busy) return;
+    networkErrors = 0;
+    softErrors = 0;
+    lastErrorWasNetwork = false;
     var preview = '';
-    var anyFinal = false;
     var firstNum = null;
     for (var i = event.resultIndex; i < event.results.length; i++) {
       var result = event.results[i];
       if (!result) continue;
-      if (result.isFinal) anyFinal = true;
       if (result[0]) preview += result[0].transcript;
       for (var j = 0; j < result.length; j++) {
         var parsed = parseSpokenNumber(result[j].transcript);
@@ -325,8 +441,7 @@ function startListening() {
         if (firstNum === null) firstNum = parsed;
       }
     }
-    heardEl.textContent = preview ? '听到：' + preview : '正在听…';
-    if (!anyFinal) return;
+    heardEl.textContent = preview ? '听到：' + preview : '正在听…请说答案';
     if (firstNum === null) {
       resultEl.textContent = '没听清，请再说一次。';
       resultEl.className = 'wrong';
@@ -336,35 +451,43 @@ function startListening() {
   };
   rec.onerror = function (event) {
     if (gen !== listenGen) return;
+    listenDot.style.display = 'none';
     var code = event && event.error;
+    lastErrorWasNetwork = (code === 'network');
     if (code === 'not-allowed' || code === 'service-not-allowed') {
       blockRestart = true;
-      heardEl.textContent = '麦克风权限被拒绝。请允许麦克风后再点「重新收音」。可以先手动输入。';
+      heardEl.textContent = '麦克风权限被拒绝。请在浏览器设置里允许麦克风后，点「重新收音」。';
+      relistenBtn.style.display = 'inline-block';
     } else if (code === 'network') {
       networkErrors += 1;
-      if (networkErrors >= 5) {
-        blockRestart = true;
-        heardEl.textContent = '语音识别服务连不上，已停止自动重试。请检查网络后点「重新收音」。';
+      if (networkErrors >= 2) {
+        /* v1 要失败 5 次才停，近 40 秒就这么烧掉了；2 次就判定服务不可达并切模式 */
+        switchToImeMode('在线识别服务连不上');
       } else {
-        heardEl.textContent = '语音识别需要联网，当前连不上识别服务。正在重试。';
+        heardEl.textContent = '识别服务连接不稳，正在重试一次…';
       }
     } else if (code === 'audio-capture') {
       blockRestart = true;
-      heardEl.textContent = '找不到麦克风。请检查设备后点「重新收音」，或先手动输入。';
+      heardEl.textContent = '找不到麦克风。请检查设备后点「重新收音」。';
+      relistenBtn.style.display = 'inline-block';
+    } else if (code === 'no-speech' || code === 'aborted') {
+      softErrors += 1;
+      heardEl.textContent = '没听到声音，请再说一次。';
     }
-    relistenBtn.style.display = blockRestart ? 'inline-block' : 'none';
   };
   rec.onend = function () {
     if (gen !== listenGen) return;
+    listenDot.style.display = 'none';
     if (recognition === rec) recognition = null;
     if (blockRestart || !running || speaking || busy || !micEnabled || ended) return;
+    if (engineMode !== 'web') return;
     scheduleListen();
   };
   try {
     rec.start();
-    heardEl.textContent = '正在听…';
   } catch (e) {
-    heardEl.textContent = '语音识别启动失败，请点「重新收音」或手动输入。';
+    heardEl.textContent = '语音识别启动失败，正在重试…';
+    scheduleListen();
   }
 }
 
@@ -389,7 +512,12 @@ function generateQuestion(prefixCorrect) {
   busy = true;
   speakThen((prefixCorrect ? '正确。' : '') + q.say, function () {
     busy = false;
-    if (running && !ended) startListening();
+    if (!running || ended) return;
+    if (engineMode === 'web') {
+      startListening();
+    } else {
+      try { answerInput.focus(); } catch (e) {}
+    }
   });
 }
 
@@ -407,10 +535,12 @@ function judge(num, fromVoice) {
   if (num === null || num !== currentAnswer) {
     resultEl.textContent = num === null ? '请输入 0 到 20 的整数。' : '不对，再试一次。';
     resultEl.className = 'wrong';
+    answerInput.value = '';
     return;
   }
   busy = true;
   correct += 1;
+  networkErrors = 0;
   updateScore();
   resultEl.textContent = '正确';
   resultEl.className = 'correct';
@@ -458,26 +588,38 @@ function finish(reason) {
 
 function startPractice() {
   if (running) return;
-  running = true;
-  ended = false;
-  busy = false;
-  blockRestart = false;
-  networkErrors = 0;
-  correct = 0;
-  currentAnswer = null;
-  updateScore();
-  deadline = Date.now() + DURATION_MS;
-  timerEl.textContent = '05:00';
-  startBtn.style.display = 'none';
-  stopBtn.style.display = 'inline-block';
-  submitBtn.style.display = 'inline-block';
-  answerInput.disabled = false;
-  submitBtn.disabled = false;
-  endScreen.style.display = 'none';
-  relistenBtn.style.display = 'none';
-  if (timerHandle) clearTimeout(timerHandle);
-  tick();
-  generateQuestion(false);
+  engineMode = 'web';
+  showBanner('');
+  numpadEl.style.display = 'none';
+  primeMic(function (ok) {
+    if (!ok) {
+      showBanner('没有拿到麦克风权限，先用手机语音输入/数字答题模式练习。请点答案框，用键盘麦克风说话，输入后自动判题。');
+      engineMode = 'ime';
+      numpadEl.style.display = 'grid';
+    }
+    running = true;
+    ended = false;
+    busy = false;
+    blockRestart = (engineMode === 'ime');
+    networkErrors = 0;
+    softErrors = 0;
+    correct = 0;
+    currentAnswer = null;
+    updateScore();
+    deadline = Date.now() + DURATION_MS;
+    timerEl.textContent = '05:00';
+    startBtn.style.display = 'none';
+    micTestBtn.style.display = 'none';
+    stopBtn.style.display = 'inline-block';
+    submitBtn.style.display = 'inline-block';
+    answerInput.disabled = false;
+    submitBtn.disabled = false;
+    endScreen.style.display = 'none';
+    relistenBtn.style.display = 'none';
+    if (timerHandle) clearTimeout(timerHandle);
+    tick();
+    generateQuestion(false);
+  });
 }
 
 function resetReady() {
@@ -486,9 +628,13 @@ function resetReady() {
   busy = false;
   blockRestart = false;
   networkErrors = 0;
+  softErrors = 0;
   correct = 0;
   currentAnswer = null;
   deadline = 0;
+  engineMode = 'web';
+  showBanner('');
+  numpadEl.style.display = 'none';
   stopSpeaking();
   stopListening();
   if (timerHandle) clearTimeout(timerHandle);
@@ -505,8 +651,57 @@ function resetReady() {
   stopBtn.style.display = 'none';
   relistenBtn.style.display = 'none';
   startBtn.style.display = 'inline-block';
+  micTestBtn.style.display = 'inline-block';
   endScreen.style.display = 'none';
 }
+
+/* 麦克风自检：只测能不能录到声音（电平条会动），不经过在线识别服务 */
+var testStream = null, testCtx = null, testRaf = null;
+function stopMicTest() {
+  if (testRaf) cancelAnimationFrame(testRaf);
+  testRaf = null;
+  if (testStream) testStream.getTracks().forEach(function (t) { t.stop(); });
+  testStream = null;
+  if (testCtx) { try { testCtx.close(); } catch (e) {} }
+  testCtx = null;
+  document.getElementById('mic-meter-wrap').style.display = 'none';
+  micTestBtn.textContent = '测试麦克风';
+}
+micTestBtn.onclick = function () {
+  if (testStream) { stopMicTest(); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    heardEl.textContent = '这个浏览器不支持麦克风检测。';
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+    testStream = stream;
+    micPrimed = true;
+    var wrap = document.getElementById('mic-meter-wrap');
+    var fill = document.getElementById('mic-meter-fill');
+    wrap.style.display = 'block';
+    micTestBtn.textContent = '停止测试';
+    heardEl.textContent = '麦克风测试中：说话时绿条会动，动了就说明能录到声音。再点一次停止。';
+    var AC = window.AudioContext || window.webkitAudioContext;
+    testCtx = new AC();
+    var src = testCtx.createMediaStreamSource(stream);
+    var analyser = testCtx.createAnalyser();
+    analyser.fftSize = 256;
+    src.connect(analyser);
+    var data = new Uint8Array(analyser.frequencyBinCount);
+    (function loop() {
+      analyser.getByteTimeDomainData(data);
+      var peak = 0;
+      for (var i = 0; i < data.length; i++) {
+        var v = Math.abs(data[i] - 128) / 128;
+        if (v > peak) peak = v;
+      }
+      fill.style.width = Math.min(100, Math.round(peak * 140)) + '%';
+      testRaf = requestAnimationFrame(loop);
+    })();
+  }).catch(function () {
+    heardEl.textContent = '麦克风权限被拒绝，无法测试。请在浏览器设置里允许麦克风。';
+  });
+};
 
 voiceToggle.onclick = function () {
   voiceEnabled = !voiceEnabled;
@@ -518,7 +713,7 @@ micToggle.onclick = function () {
   micEnabled = !micEnabled;
   micToggle.textContent = micEnabled ? '麦克风答题：开' : '麦克风答题：关';
   if (!micEnabled) stopListening();
-  else if (running && !speaking && !busy && !ended) startListening();
+  else if (running && !speaking && !busy && !ended && engineMode === 'web') startListening();
 };
 
 startBtn.onclick = startPractice;
@@ -531,14 +726,22 @@ relistenBtn.onclick = function () {
   startListening();
 };
 submitBtn.onclick = function () {
-  var raw = answerInput.value.trim();
-  if (!/^(?:0|[1-9]\d*)$/.test(raw)) {
-    judge(null, false);
-    return;
-  }
-  var n = Number(raw);
-  judge(n > 20 ? null : n, false);
+  var n = parseSpokenNumber(answerInput.value);
+  judge(n, false);
 };
+/* 手机语音输入/手动输入：内容稳定 600ms 后自动判题，不用再点提交 */
+answerInput.addEventListener('input', function () {
+  if (!running || ended) return;
+  if (inputDebounce) clearTimeout(inputDebounce);
+  inputDebounce = setTimeout(function () {
+    inputDebounce = null;
+    if (!running || ended || busy) return;
+    var raw = answerInput.value;
+    if (!raw || !String(raw).trim()) return;
+    var n = parseSpokenNumber(raw);
+    if (n !== null) judge(n, false);
+  }, 600);
+});
 answerInput.onkeydown = function (e) {
   if (e.key === 'Enter') submitBtn.onclick();
 };
