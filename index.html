@@ -302,25 +302,37 @@ function startListening() {
   recognition = rec;
   rec.lang = 'zh-CN';
   rec.continuous = false;
-  rec.interimResults = false;
+  rec.interimResults = true;
   rec.maxAlternatives = 5;
   rec.onresult = function (event) {
     if (gen !== listenGen || !running || speaking || busy) return;
-    var result = event.results[event.results.length - 1];
-    if (!result || !result.isFinal) return;
-    var nums = [];
-    var preview = result[0] ? result[0].transcript : '';
-    for (var j = 0; j < result.length; j++) {
-      var parsed = parseSpokenNumber(result[j].transcript);
-      if (parsed !== null && nums.indexOf(parsed) === -1) nums.push(parsed);
+    var preview = '';
+    var anyFinal = false;
+    var firstNum = null;
+    for (var i = event.resultIndex; i < event.results.length; i++) {
+      var result = event.results[i];
+      if (!result) continue;
+      if (result.isFinal) anyFinal = true;
+      if (result[0]) preview += result[0].transcript;
+      for (var j = 0; j < result.length; j++) {
+        var parsed = parseSpokenNumber(result[j].transcript);
+        if (parsed === null) continue;
+        if (parsed === currentAnswer) {
+          heardEl.textContent = '听到：' + result[j].transcript;
+          judge(parsed, true);
+          return;
+        }
+        if (firstNum === null) firstNum = parsed;
+      }
     }
-    heardEl.textContent = preview ? '听到：' + preview : '';
-    if (nums.length !== 1) {
-      resultEl.textContent = nums.length > 1 ? '有好几个数字，请只说一个答案。' : '没听成 0 到 20 的数字，请再说一次。';
+    heardEl.textContent = preview ? '听到：' + preview : '正在听…';
+    if (!anyFinal) return;
+    if (firstNum === null) {
+      resultEl.textContent = '没听清，请再说一次。';
       resultEl.className = 'wrong';
       return;
     }
-    judge(nums[0], true);
+    judge(firstNum, true);
   };
   rec.onerror = function (event) {
     if (gen !== listenGen) return;
